@@ -7,6 +7,7 @@
 from pathlib import Path
 from typing import Dict, List, Optional
 
+from main import DataFetcher
 from ..services.data_service import DataService
 from ..utils.validators import validate_platforms
 from ..utils.errors import MCPError, CrawlTaskError
@@ -87,16 +88,13 @@ class SystemManagementTools:
             >>> print(result['saved_files'])
         """
         try:
-            import json
             import time
-            import random
-            import requests
             from datetime import datetime
             import pytz
             import yaml
 
             # 参数验证
-            platforms = validate_platforms(platforms)
+            platforms_to_crawl = validate_platforms(platforms)
 
             # 加载配置文件
             config_path = self.project_root / "config" / "config.yaml"
@@ -119,107 +117,22 @@ class SystemManagementTools:
                 )
 
             # 过滤平台
-            if platforms:
-                target_platforms = [p for p in all_platforms if p["id"] in platforms]
+            if platforms_to_crawl:
+                target_platforms = [p for p in all_platforms if p["id"] in platforms_to_crawl]
                 if not target_platforms:
                     raise CrawlTaskError(
-                        f"指定的平台不存在: {platforms}",
+                        f"指定的平台不存在: {platforms_to_crawl}",
                         suggestion=f"可用平台: {[p['id'] for p in all_platforms]}"
                     )
             else:
                 target_platforms = all_platforms
 
-            # 获取请求间隔
-            request_interval = config_data.get("crawler", {}).get("request_interval", 100)
-
-            # 构建平台ID列表
-            ids = []
-            for platform in target_platforms:
-                if "name" in platform:
-                    ids.append((platform["id"], platform["name"]))
-                else:
-                    ids.append(platform["id"])
-
             print(f"开始临时爬取，平台: {[p.get('name', p['id']) for p in target_platforms]}")
 
             # 爬取数据
-            results = {}
-            id_to_name = {}
-            failed_ids = []
+            data_fetcher = DataFetcher()
+            results, id_to_name, failed_ids = data_fetcher.crawl_websites(target_platforms)
 
-            for i, id_info in enumerate(ids):
-                if isinstance(id_info, tuple):
-                    id_value, name = id_info
-                else:
-                    id_value = id_info
-                    name = id_value
-
-                id_to_name[id_value] = name
-
-                # 构建请求URL
-                url = f"https://newsnow.busiyi.world/api/s?id={id_value}&latest"
-
-                headers = {
-                    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
-                    "Accept": "application/json, text/plain, */*",
-                    "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
-                    "Connection": "keep-alive",
-                    "Cache-Control": "no-cache",
-                }
-
-                # 重试机制
-                max_retries = 2
-                retries = 0
-                success = False
-
-                while retries <= max_retries and not success:
-                    try:
-                        response = requests.get(url, headers=headers, timeout=10)
-                        response.raise_for_status()
-
-                        data_text = response.text
-                        data_json = json.loads(data_text)
-
-                        status = data_json.get("status", "未知")
-                        if status not in ["success", "cache"]:
-                            raise ValueError(f"响应状态异常: {status}")
-
-                        status_info = "最新数据" if status == "success" else "缓存数据"
-                        print(f"获取 {id_value} 成功（{status_info}）")
-
-                        # 解析数据
-                        results[id_value] = {}
-                        for index, item in enumerate(data_json.get("items", []), 1):
-                            title = item["title"]
-                            url_link = item.get("url", "")
-                            mobile_url = item.get("mobileUrl", "")
-
-                            if title in results[id_value]:
-                                results[id_value][title]["ranks"].append(index)
-                            else:
-                                results[id_value][title] = {
-                                    "ranks": [index],
-                                    "url": url_link,
-                                    "mobileUrl": mobile_url,
-                                }
-
-                        success = True
-
-                    except Exception as e:
-                        retries += 1
-                        if retries <= max_retries:
-                            wait_time = random.uniform(3, 5)
-                            print(f"请求 {id_value} 失败: {e}. {wait_time:.2f}秒后重试...")
-                            time.sleep(wait_time)
-                        else:
-                            print(f"请求 {id_value} 失败: {e}")
-                            failed_ids.append(id_value)
-
-                # 请求间隔
-                if i < len(ids) - 1:
-                    actual_interval = request_interval + random.randint(-10, 20)
-                    actual_interval = max(50, actual_interval)
-                    time.sleep(actual_interval / 1000)
 
             # 格式化返回数据
             news_data = []
