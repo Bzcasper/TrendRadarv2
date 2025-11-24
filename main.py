@@ -239,10 +239,6 @@ def load_config():
     return config
 
 
-print("正在加载配置...")
-CONFIG = load_config()
-print(f"TrendRadar v{VERSION} 配置加载完成")
-print(f"监控平台数量: {len(CONFIG['PLATFORMS'])}")
 
 
 # === 工具函数 ===
@@ -524,9 +520,33 @@ class DataFetcher:
                     return None, id_value, alias
         return None, id_value, alias
 
+    def _fetch_reddit_data(self, subreddits: List[str]) -> Tuple[Optional[str], str, str]:
+        """获取Reddit数据"""
+        trends = {"items": []}
+        session = requests.Session()
+        for subreddit in subreddits:
+            url = f"https://www.reddit.com/r/{subreddit}/hot.json?limit=10"
+            try:
+                response = session.get(
+                    url, headers={"User-agent": "TrendRadar 1.0"}, timeout=10
+                )
+                response.raise_for_status()
+                data = response.json()
+                for post in data["data"]["children"]:
+                    trends["items"].append(
+                        {
+                            "title": post["data"]["title"],
+                            "url": f"https://www.reddit.com{post['data']['permalink']}",
+                            "hotness": post["data"]["score"],
+                        }
+                    )
+            except requests.exceptions.RequestException as e:
+                print(f"Error fetching data from Reddit {subreddit}: {e}")
+        return json.dumps(trends), "reddit", "Reddit"
+
     def crawl_websites(
         self,
-        ids_list: List[Union[str, Tuple[str, str]]],
+        platforms: List[Dict],
         request_interval: int = CONFIG["REQUEST_INTERVAL"],
     ) -> Tuple[Dict, Dict, List]:
         """爬取多个网站数据"""
@@ -534,15 +554,16 @@ class DataFetcher:
         id_to_name = {}
         failed_ids = []
 
-        for i, id_info in enumerate(ids_list):
-            if isinstance(id_info, tuple):
-                id_value, name = id_info
-            else:
-                id_value = id_info
-                name = id_value
+        for i, platform_config in enumerate(platforms):
+            id_value = platform_config["id"]
+            name = platform_config.get("name", id_value)
 
-            id_to_name[id_value] = name
-            response, _, _ = self.fetch_data(id_info)
+            if id_value == "reddit":
+                id_to_name[id_value] = name
+                response, _, _ = self._fetch_reddit_data(platform_config["subreddits"])
+            else:
+                id_to_name[id_value] = name
+                response, _, _ = self.fetch_data((id_value, name))
 
             if response:
                 try:
@@ -574,7 +595,7 @@ class DataFetcher:
             else:
                 failed_ids.append(id_value)
 
-            if i < len(ids_list) - 1:
+            if i < len(platforms) - 1:
                 actual_interval = request_interval + random.randint(-10, 20)
                 actual_interval = max(50, actual_interval)
                 time.sleep(actual_interval / 1000)
@@ -4640,21 +4661,16 @@ class NewsAnalyzer:
 
     def _crawl_data(self) -> Tuple[Dict, Dict, List]:
         """执行数据爬取"""
-        ids = []
-        for platform in CONFIG["PLATFORMS"]:
-            if "name" in platform:
-                ids.append((platform["id"], platform["name"]))
-            else:
-                ids.append(platform["id"])
+        platforms = CONFIG["PLATFORMS"]
 
         print(
-            f"配置的监控平台: {[p.get('name', p['id']) for p in CONFIG['PLATFORMS']]}"
+            f"配置的监控平台: {[p.get('name', p['id']) for p in platforms]}"
         )
         print(f"开始爬取数据，请求间隔 {self.request_interval} 毫秒")
         ensure_directory_exists("output")
 
         results, id_to_name, failed_ids = self.data_fetcher.crawl_websites(
-            ids, self.request_interval
+            platforms, self.request_interval
         )
 
         title_file = save_titles_to_file(results, id_to_name, failed_ids)
@@ -4795,6 +4811,12 @@ class NewsAnalyzer:
 
 
 def main():
+    global CONFIG
+    print("正在加载配置...")
+    CONFIG = load_config()
+    print(f"TrendRadar v{VERSION} 配置加载完成")
+    print(f"监控平台数量: {len(CONFIG['PLATFORMS'])}")
+
     try:
         analyzer = NewsAnalyzer()
         analyzer.run()
